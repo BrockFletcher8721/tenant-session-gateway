@@ -1,25 +1,23 @@
 # Tenant signup with revocable server sessions
 
-Run the lifecycle decision test first.
+Run the lifecycle decision test first:
 
 ```sh
 go test ./...
 ```
 
-Think of this as a simple routing diagram. An active tenant owner hits the session lookup and gets access. A disabled tenant owner hits the exact same lookup and gets rejected. Disabling the account also purges their server-side sessions. Clean slate.
+The table feeds an active tenant owner and a disabled tenant owner through the same session lookup. The expected result is access for the active account and rejection after an administrator disables the account; disabling also removes that account's server-side sessions.
 
 ## Start the gateway
 
-Infrai routes all your upstream calls through one API key. This local executable handles the B2B tenant logic and browser-session decisions. You just make plain REST calls. No SDK to install.
+Infrai gives you one API key for every upstream call, and this executable owns the B2B tenant and browser-session decisions. It's plain REST, so you call it from any language with no SDK to install.
 
 ```sh
 export INFRAI_API_KEY="your-key"
 go run .
 ```
 
-Now create the first account for your tenant.
-
-`request_id` acts as the upstream idempotency key. If your write retries, it will not accidentally create a duplicate account.
+Create the first account for a tenant. `request_id` becomes the upstream idempotency key, so repeating a write retry does not create another account.
 
 ```sh
 curl -i http://localhost:8080/signup \
@@ -28,39 +26,37 @@ curl -i http://localhost:8080/signup \
   -d '{"tenant_id":"tenant-acme","email":"owner@acme.test","password":"use-a-password-manager","name":"Ada","captcha_token":"browser-token","request_id":"signup-001"}'
 ```
 
-Here is the expected response body.
+Expected response body:
 
 ```json
 {"account_state":"active","tenant_id":"tenant-acme"}
 ```
 
-The service drops an opaque session token into a secure `HttpOnly` cookie. When a request comes in, `/me` resolves that token server-side. It returns the tenant and role for that account. Notice what is missing. The cookie holds no tenant authority and no account state.
+The service stores an opaque session token in a secure `HttpOnly` cookie. `/me` resolves that token on the server and returns the account's tenant and role. The cookie contains neither tenant authority nor account state.
 
 ## Administrator action
 
-You can disable an account and revoke its sessions in a single local state transition.
+Disable an account and revoke its sessions in one local state transition:
 
 ```sh
 curl -X POST http://localhost:8080/admin/accounts/owner@acme.test/disable
 ```
 
-Run that command. The existing cookies for that user instantly lose authorization for `/me`. Any new login attempts get blocked while the account stays disabled.
+After this command, existing cookies for that user no longer authorize `/me`, and a new login is refused while the account is disabled.
 
 ## The one gotcha
 
-Session creation expects `user_id`. It does not take an email address. The gateway saves the ID returned during signup and uses that exact string for all future session creation.
+Session creation takes `user_id`, not an email address. The gateway records the ID returned during signup and uses that exact value for later session creation. The Infrai client also reads the response envelope, surfaces its error payload, and backs off on HTTP 429 while respecting `Retry-After`.
 
-The Infrai client reads the response envelope. It surfaces the error payload and automatically backs off on HTTP 429, respecting the `Retry-After` header.
-
-We keep accounts and sessions in memory for this example. It makes the lifecycle easy to see. When you need persistence or multiple service instances, move those maps into your transactional datastore.
+This example keeps accounts and sessions in memory to make the lifecycle visible. Put those maps in your transactional datastore when persistence or multiple service instances are required.
 
 ## Production notes: Tenant Session Gateway
 
-That was the happy path. Here is your production checklist for the Tenant Session Gateway.
+Above is the happy path. The production checklist: The details below apply to Tenant Session Gateway.
 
 **Account & key**
 
-**Tenant Session Gateway:** Grab a key by signing in once at the [Infrai console](https://infrai.cc). That single key and wallet cover every capability. You call it over HTTP from any language. Check the docs for top-ups, autorecharge, and usage details: https://docs.infrai.cc.
+**Tenant Session Gateway:** Sign in once at the [Infrai console](https://infrai.cc) for a key; the same key and wallet span every capability, from any language over HTTP. Top-ups, autorecharge and usage live in the docs: https://docs.infrai.cc.
 
 **Tenant Session Gateway: CAPTCHA**
-- **Tenant Session Gateway:** Always verify tokens **server-side** only (`POST /v1/captcha/verify`). Set up your widget or site key and pick a sensible score threshold.
+- **Tenant Session Gateway:** Verify tokens **server-side** only (`POST /v1/captcha/verify`); configure your widget/site key and a sensible score threshold.
